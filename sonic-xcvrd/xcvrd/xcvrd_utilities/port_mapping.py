@@ -1,3 +1,4 @@
+from natsort import natsorted
 from sonic_py_common import daemon_base
 from sonic_py_common import multi_asic
 from sonic_py_common.interface import backplane_prefix, inband_prefix, recirc_prefix
@@ -56,7 +57,14 @@ class PortMapping:
         if port_change_event.port_index not in self.physical_to_logical:
             self.physical_to_logical[port_change_event.port_index] = [port_name]
         else:
+            # It cannot guarantee that the set operation of creating child ports
+            # during port breakout will be in the order of child_port_1, child_port_2, ...etc.
+            #
+            # Therefore, the wrong index of child port will be obtained if the list of
+            # child port is not in order and caused the incorrect pre-emphasis
+            # value is extracted from media_settings.json.
             self.physical_to_logical[port_change_event.port_index].append(port_name)
+            self.physical_to_logical[port_change_event.port_index] = natsorted(self.physical_to_logical[port_change_event.port_index])
         self.logical_to_asic[port_name] = port_change_event.asic_id
 
     def _handle_port_remove(self, port_change_event):
@@ -103,6 +111,20 @@ def subscribe_port_config_change(namespaces):
         config_db = daemon_base.db_connect("CONFIG_DB", namespace=namespace)
         asic_id = multi_asic.get_asic_index_from_namespace(namespace)
         port_tbl = swsscommon.SubscriberStateTable(config_db, swsscommon.CFG_PORT_TABLE_NAME)
+        asic_context[port_tbl] = asic_id
+        sel.addSelectable(port_tbl)
+    return sel, asic_context
+
+def subscribe_port_speed_change_event(namespaces):
+    sel = swsscommon.Select()
+    asic_context = {}
+    for namespace in namespaces:
+        config_db = daemon_base.db_connect("APPL_DB", namespace=namespace)
+        asic_id = multi_asic.get_asic_index_from_namespace(namespace)
+        port_tbl = swsscommon.SubscriberStateTable(config_db, swsscommon.APP_PORT_TABLE_NAME)
+        port_tbl.db_name = "APPL_DB"
+        port_tbl.table_name = swsscommon.APP_PORT_TABLE_NAME
+        port_tbl.filter = None
         asic_context[port_tbl] = asic_id
         sel.addSelectable(port_tbl)
     return sel, asic_context
@@ -240,7 +262,7 @@ def read_port_config_change(asic_context, port_mapping, logger, port_change_even
                 new_physical_index = int(fvp['index'])
                 if not port_mapping.is_logical_port(key):
                     # New logical port created
-                    port_change_event = PortChangeEvent(key, new_physical_index, asic_context[port_tbl], PortChangeEvent.PORT_ADD)
+                    port_change_event = PortChangeEvent(key, new_physical_index, asic_context[port_tbl], PortChangeEvent.PORT_ADD, fvp)
                     port_change_event_handler(port_change_event)
                 else:
                     current_physical_index = port_mapping.get_logical_to_physical(key)[0]
@@ -251,7 +273,7 @@ def read_port_config_change(asic_context, port_mapping, logger, port_change_even
                                                             PortChangeEvent.PORT_REMOVE)
                         port_change_event_handler(port_change_event)
 
-                        port_change_event = PortChangeEvent(key, new_physical_index, asic_context[port_tbl], PortChangeEvent.PORT_ADD)
+                        port_change_event = PortChangeEvent(key, new_physical_index, asic_context[port_tbl], PortChangeEvent.PORT_ADD, fvp)
                         port_change_event_handler(port_change_event)
             elif op == swsscommon.DEL_COMMAND:
                 if port_mapping.is_logical_port(key):

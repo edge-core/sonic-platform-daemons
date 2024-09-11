@@ -103,6 +103,7 @@ platform_chassis = None
 # TODO: Refactor so that we only need the logger inherited
 # by DaemonXcvrd
 helper_logger = logger.Logger(SYSLOG_IDENTIFIER)
+helper_logger.set_min_log_priority_info()
 
 #
 # Helper functions =============================================================
@@ -343,6 +344,27 @@ def _wrapper_get_sfp_error_description(physical_port):
         except NotImplementedError:
             pass
     return None
+
+# Check if the media type of sfp is copper
+def _wrapper_is_copper(physical_port):
+    if platform_chassis:
+        try:
+            sfp = platform_chassis.get_sfp(physical_port)
+        except (NotImplementedError, AttributeError):
+            return None
+
+        api = sfp.get_xcvr_api()
+        if api is None:
+            return None
+
+        if hasattr(api, 'is_copper') == True:
+            try:
+                return api.is_copper()
+            except:
+                pass
+
+    return None
+
 
 # Remove unnecessary unit from the raw data
 
@@ -747,6 +769,25 @@ def delete_port_from_status_table_hw(logical_port_name, port_mapping, status_tbl
 def is_fast_reboot_enabled():
     fastboot_enabled = subprocess.check_output('sonic-db-cli STATE_DB hget "FAST_RESTART_ENABLE_TABLE|system" enable', shell=True, universal_newlines=True)
     return "true" in fastboot_enabled
+
+# Get port speed and lane config from CONFIG DB
+def get_port_speed_and_lane_config():
+    port_dict = {}
+    # Connect to CONFIG_DB and extract PORT table
+    config_db = daemon_base.db_connect("CONFIG_DB")
+    port_table = swsscommon.Table(config_db, swsscommon.CFG_PORT_TABLE_NAME)
+    for key in port_table.getKeys():
+        if not port_mapping.validate_port(key):
+            continue
+        _, port_config = port_table.get(key)
+        port_config_dict = dict(port_config)
+        port_dict[key] = {}
+        if 'speed' in port_config_dict:
+            port_dict[key]['speed'] = port_config_dict['speed']
+        if 'lanes' in port_config_dict:
+            port_dict[key]['lanes'] = port_config_dict['lanes']
+
+    return port_dict
 
 #
 # Helper classes ===============================================================
@@ -1702,6 +1743,8 @@ class SfpStateUpdateTask(threading.Thread):
         self.sfp_error_dict = {}
         self.sfp_insert_events = {}
         self.namespaces = namespaces
+        # A dict which recorded lane number and port speed with logical port name
+        self.port_dict = get_port_speed_and_lane_config()
 
     def _mapping_event_from_change_event(self, status, port_dict):
         """
@@ -1732,6 +1775,7 @@ class SfpStateUpdateTask(threading.Thread):
         # Connect to STATE_DB and create transceiver dom/sfp info tables
         transceiver_dict = {}
         retry_eeprom_set = set()
+        port_dict = get_port_speed_and_lane_config()
 
         warmstart = swsscommon.WarmStart()
         warmstart.initialize("xcvrd", "pmon")
@@ -1756,7 +1800,7 @@ class SfpStateUpdateTask(threading.Thread):
 
                 # Do not notify media settings during warm reboot to avoid dataplane traffic impact
                 if is_warm_start == False:
-                    media_settings_parser.notify_media_setting(logical_port_name, transceiver_dict, xcvr_table_helper.get_app_port_tbl(asic_index), xcvr_table_helper.get_cfg_port_tbl(asic_index), port_mapping)
+                    media_settings_parser.notify_media_setting(logical_port_name, transceiver_dict, xcvr_table_helper.get_app_port_tbl(asic_index), xcvr_table_helper.get_cfg_port_tbl(asic_index), port_mapping, port_dict)
                     transceiver_dict.clear()
             else:
                 retry_eeprom_set.add(logical_port_name)
@@ -1880,8 +1924,10 @@ class SfpStateUpdateTask(threading.Thread):
         self.init()
 
         sel, asic_context = port_mapping.subscribe_port_config_change(self.namespaces)
+        sel_for_appdb, asic_context_for_appdb = port_mapping.subscribe_port_speed_change_event(self.namespaces)
         while not stopping_event.is_set():
             port_mapping.handle_port_config_change(sel, asic_context, stopping_event, self.port_mapping, helper_logger, self.on_port_config_change)
+            port_mapping.handle_port_update_event(sel_for_appdb, asic_context_for_appdb, stopping_event, helper_logger, self.port_speed_change_event_handler)
 
             # Retry those logical ports whose EEPROM reading failed or timeout when the SFP is inserted
             self.retry_eeprom_reading()
@@ -1979,7 +2025,7 @@ class SfpStateUpdateTask(threading.Thread):
                                 if rc != SFP_EEPROM_NOT_READY:
                                     post_port_dom_threshold_info_to_db(logical_port, self.port_mapping, self.xcvr_table_helper.get_dom_threshold_tbl(asic_index))
                                     post_port_sfp_firmware_info_to_db(logical_port, self.port_mapping, self.xcvr_table_helper.get_firmware_info_tbl(asic_index))
-                                    media_settings_parser.notify_media_setting(logical_port, transceiver_dict, self.xcvr_table_helper.get_app_port_tbl(asic_index), self.xcvr_table_helper.get_cfg_port_tbl(asic_index), self.port_mapping)
+                                    media_settings_parser.notify_media_setting(logical_port, transceiver_dict, self.xcvr_table_helper.get_app_port_tbl(asic_index), self.xcvr_table_helper.get_cfg_port_tbl(asic_index), self.port_mapping, self.port_dict)
                                     transceiver_dict.clear()
                             elif value == sfp_status_helper.SFP_STATUS_REMOVED:
                                 helper_logger.log_notice("{}: Got SFP removed event".format(logical_port))
@@ -2103,6 +2149,61 @@ class SfpStateUpdateTask(threading.Thread):
             self.port_mapping.handle_port_change_event(port_change_event)
             self.on_add_logical_port(port_change_event)
 
+    def update_port_speed_and_lane_to_port_dict(self, port_change_event):
+        notify_media = False
+        lport = port_change_event.port_name
+        pport = port_change_event.port_index
+
+        # Skip if it's not a physical port
+        if not lport.startswith('Ethernet'):
+            return
+
+        # Skip if the physical index is not available
+        if pport == -1:
+            return
+
+        if lport not in self.port_dict:
+            self.port_dict[lport] = {}
+
+        if pport >= 0:
+            self.port_dict[lport]['index'] = pport
+
+        if port_change_event.port_dict is not None and 'speed' in port_change_event.port_dict:
+            if 'speed' not in self.port_dict[lport] or self.port_dict[lport]['speed'] != port_change_event.port_dict['speed']:
+                notify_media = True
+                self.port_dict[lport]['speed'] = port_change_event.port_dict['speed']
+        if port_change_event.port_dict is not None and 'lanes' in port_change_event.port_dict:
+            if 'lanes' not in self.port_dict[lport] or self.port_dict[lport]['lanes'] != port_change_event.port_dict['lanes']:
+                notify_media = True
+                self.port_dict[lport]['lanes'] = port_change_event.port_dict['lanes']
+
+        return notify_media
+
+    # Notify media when the port speed is changed in system runtime
+    def port_speed_change_event_handler(self, port_change_event):
+        if port_change_event.event_type not in [port_change_event.PORT_SET]:
+            return
+
+        lport = port_change_event.port_name
+        pport = port_change_event.port_index
+        notify_media = self.update_port_speed_and_lane_to_port_dict(port_change_event)
+
+        if notify_media is True:
+            asic_id = port_change_event.asic_id
+            transceiver_dict = {}
+            # transceiver_dom_dict = {}
+
+            port_info_dict = _wrapper_get_transceiver_info(pport)
+            if port_info_dict is not None:
+                transceiver_dict[pport] = port_info_dict
+
+            # dom_info_dict = _wrapper_get_transceiver_dom_info(pport)
+            # if dom_info_dict is not None:
+            #     beautify_dom_info_dict(dom_info_dict, pport)
+            #     transceiver_dom_dict[pport] = dom_info_dict
+
+            media_settings_parser.notify_media_setting(lport, transceiver_dict, self.xcvr_table_helper.get_app_port_tbl(port_change_event.asic_id), self.xcvr_table_helper.get_cfg_port_tbl(port_change_event.asic_id), self.port_mapping, self.port_dict)
+
     def on_remove_logical_port(self, port_change_event):
         """Called when a logical port is removed from CONFIG_DB.
 
@@ -2149,6 +2250,9 @@ class SfpStateUpdateTask(threading.Thread):
         dom_threshold_tbl = self.xcvr_table_helper.get_dom_threshold_tbl(port_change_event.asic_id)
         firmware_info_tbl = self.xcvr_table_helper.get_firmware_info_tbl(port_change_event.asic_id)
 
+        # Update port speed and lane to port_dict
+        self.update_port_speed_and_lane_to_port_dict(port_change_event)
+
         error_description = 'N/A'
         status = None
         read_eeprom = True
@@ -2183,7 +2287,7 @@ class SfpStateUpdateTask(threading.Thread):
             else:
                 post_port_dom_threshold_info_to_db(port_change_event.port_name, self.port_mapping, dom_threshold_tbl)
                 post_port_sfp_firmware_info_to_db(port_change_event.port_name, self.port_mapping, firmware_info_tbl)
-                media_settings_parser.notify_media_setting(port_change_event.port_name, transceiver_dict, self.xcvr_table_helper.get_app_port_tbl(port_change_event.asic_id), self.xcvr_table_helper.get_cfg_port_tbl(port_change_event.asic_id), self.port_mapping)
+                media_settings_parser.notify_media_setting(port_change_event.port_name, transceiver_dict, self.xcvr_table_helper.get_app_port_tbl(port_change_event.asic_id), self.xcvr_table_helper.get_cfg_port_tbl(port_change_event.asic_id), self.port_mapping, self.port_dict)
         else:
             status = sfp_status_helper.SFP_STATUS_REMOVED if not status else status
         update_port_transceiver_status_table_sw(port_change_event.port_name, status_tbl, status, error_description)
@@ -2210,7 +2314,7 @@ class SfpStateUpdateTask(threading.Thread):
             if rc != SFP_EEPROM_NOT_READY:
                 post_port_dom_threshold_info_to_db(logical_port, self.port_mapping, self.xcvr_table_helper.get_dom_threshold_tbl(asic_index))
                 post_port_sfp_firmware_info_to_db(logical_port, self.port_mapping, self.xcvr_table_helper.get_firmware_info_tbl(asic_index))
-                media_settings_parser.notify_media_setting(logical_port, transceiver_dict, self.xcvr_table_helper.get_app_port_tbl(asic_index), self.xcvr_table_helper.get_cfg_port_tbl(asic_index), self.port_mapping)
+                media_settings_parser.notify_media_setting(logical_port, transceiver_dict, self.xcvr_table_helper.get_app_port_tbl(asic_index), self.xcvr_table_helper.get_cfg_port_tbl(asic_index), self.port_mapping, self.port_dict)
                 transceiver_dict.clear()
                 retry_success_set.add(logical_port)
         # Update retry EEPROM set
