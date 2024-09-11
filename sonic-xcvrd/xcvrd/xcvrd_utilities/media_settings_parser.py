@@ -162,24 +162,17 @@ def get_media_val_str_from_dict(media_dict):
     return media_str
 
 
-def get_media_val_str(num_logical_ports, lane_dict, logical_idx, port_dict):
+def get_media_val_str(num_logical_ports, lane_dict, logical_idx):
     LANE_STR = 'lane'
 
     logical_media_dict = {}
-    # Consider that some breakout modes will not use all lanes in a port.
-    # Need to derive the max lane number in used according to the num_logical_ports
-    # and the lane number in child port.
-    try:
-        num_lanes_on_port = len(list(port_dict['lanes'].split(","))) * num_logical_ports
-    except:
-        # Can not get the lane count in used,
-        # fallback to the original way to get from media_settings.json
-        num_lanes_on_port = len(lane_dict)
+    num_lanes_on_port = len(lane_dict)
 
     # The physical ports has more than one logical port meaning it is
     # in breakout mode. So fetch the corresponding lanes from the file
     media_val_str = ''
-    if num_lanes_on_port >= num_logical_ports:
+    if (num_logical_ports > 1) and \
+       (num_lanes_on_port >= num_logical_ports):
         num_lanes_per_logical_port = num_lanes_on_port//num_logical_ports
         start_lane = logical_idx * num_lanes_per_logical_port
 
@@ -190,6 +183,8 @@ def get_media_val_str(num_logical_ports, lane_dict, logical_idx, port_dict):
             logical_media_dict[logical_lane_idx_str] = lane_dict[lane_idx_str]
 
         media_val_str = get_media_val_str_from_dict(logical_media_dict)
+    else:
+        media_val_str = get_media_val_str_from_dict(lane_dict)
 
     return media_val_str
 
@@ -353,7 +348,7 @@ def notify_media_setting(logical_port_name, transceiver_dict,
             if type(media_dict[media_key]) is dict:
                 media_val_str = get_media_val_str(num_logical_ports,
                                                   media_dict[media_key],
-                                                  logical_idx, port_dict[logical_port_name])
+                                                  logical_idx)
             else:
                 media_val_str = media_dict[media_key]
             helper_logger.log_debug("{}:({},{}) ".format(index, str(media_key), str(media_val_str)))

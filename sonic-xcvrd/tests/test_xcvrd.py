@@ -1946,12 +1946,12 @@ class TestXcvrdScript(object):
     def test_get_media_val_str(self):
         num_logical_ports = 1
         lane_dict = {'lane0': '1', 'lane1': '2', 'lane2': '3', 'lane3': '4'}
-        logical_idx = 0
-        media_str = get_media_val_str(num_logical_ports, lane_dict, logical_idx, None)
+        logical_idx = 1
+        media_str = get_media_val_str(num_logical_ports, lane_dict, logical_idx)
         assert media_str == '1,2,3,4'
         num_logical_ports = 2
         logical_idx = 1
-        media_str = get_media_val_str(num_logical_ports, lane_dict, logical_idx, None)
+        media_str = get_media_val_str(num_logical_ports, lane_dict, logical_idx)
         assert media_str == '3,4'
 
     @patch('xcvrd.xcvrd.DaemonXcvrd.load_platform_util', MagicMock())
