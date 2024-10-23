@@ -1024,10 +1024,10 @@ class CmisManagerTask(threading.Thread):
                 if dp_state[name] != 'DataPathActivated':
                     skip = False
                     break
-                #name = "ConfigStatusLane{}".format(lane + 1)
-                #if conf_state[name] != 'ConfigSuccess':
-                #    skip = False
-                #    break
+                name = "ConfigStatusLane{}".format(lane + 1)
+                if conf_state[name] != 'ConfigSuccess' and conf_state[name] != 'ConfigUndefined':
+                    skip = False
+                    break
             return (not skip)
         return True
 
