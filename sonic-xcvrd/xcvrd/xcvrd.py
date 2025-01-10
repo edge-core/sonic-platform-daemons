@@ -996,7 +996,7 @@ class CmisManagerTask:
             if 'admin_status' in port_change_event.port_dict:
                 self.port_dict[lport]['admin_status'] = port_change_event.port_dict['admin_status']
             if 'laser_freq' in port_change_event.port_dict:
-                self.port_dict[lport]['laser_freq'] = int(port_change_event.port_dict['laser_freq'])
+                self.port_dict[lport]['laser_freq'] = int(float(port_change_event.port_dict['laser_freq']))
             if 'tx_power' in port_change_event.port_dict:
                 self.port_dict[lport]['tx_power'] = float(port_change_event.port_dict['tx_power'])
 
