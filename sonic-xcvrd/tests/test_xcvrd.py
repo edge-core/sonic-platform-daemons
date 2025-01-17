@@ -1108,6 +1108,21 @@ class TestXcvrdScript(object):
         task.xcvr_table_helper.get_cfg_port_tbl = mock_table_helper.get_cfg_port_tbl
         assert task.get_configured_tx_power_from_db('Ethernet0') == -10
 
+    @pytest.mark.parametrize("appl, host_assign, vendor, expected", [
+        (1, 0x1, 'Credo', True),
+        (2, 0x11, 'Credo', False),
+        (1, 0x1, 'Molex', False)
+    ])
+    def test_CmisManagerTask_need_lp_mode_for_dpdeinit(self, appl, host_assign, vendor, expected):
+        port_mapping = PortMapping()
+        stop_event = threading.Event()
+        task = CmisManagerTask(DEFAULT_NAMESPACE, port_mapping, stop_event)
+
+        mock_xcvr_api = MagicMock()
+        mock_xcvr_api.get_manufacturer = MagicMock(return_value=vendor)
+        mock_xcvr_api.get_host_lane_assignment_option = MagicMock(return_value=host_assign)
+        assert task.need_lp_mode_for_dpdeinit(mock_xcvr_api, appl) == expected
+
     @patch('xcvrd.xcvrd.platform_chassis')
     @patch('xcvrd.xcvrd_utilities.port_mapping.subscribe_port_update_event', MagicMock(return_value=(None, None)))
     @patch('xcvrd.xcvrd_utilities.port_mapping.handle_port_update_event', MagicMock())

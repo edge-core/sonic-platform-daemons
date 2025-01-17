@@ -1318,6 +1318,19 @@ class CmisManagerTask(threading.Thread):
             if key in ["PortConfigDone", "PortInitDone"]:
                 break
 
+    def need_lp_mode_for_dpdeinit(self, api, appl):
+        try:
+            host_assign = api.get_host_lane_assignment_option(appl)
+            vendor = api.get_manufacturer().strip()
+        except NotImplementedError:
+            helper_logger.log_error("Required feature is not implemented")
+            return False
+
+        if vendor == "Credo" and host_assign == 0x1:
+            return True
+        else:
+            return False
+
     def task_worker(self):
         self.xcvr_table_helper = XcvrTableHelper(self.namespaces)
 
@@ -1514,7 +1527,20 @@ class CmisManagerTask(threading.Thread):
                             continue
                         self.log_notice("{}: force Datapath reinit".format(lport))
                         self.port_dict[lport]['cmis_state'] = self.CMIS_STATE_DP_DEINIT
+                        if self.need_lp_mode_for_dpdeinit(api, appl):
+                            api.set_lpmode(True)
+                            now = datetime.datetime.now()
+                            modulePwrDownDuration = self.get_cmis_module_power_down_duration_secs(api)
+                            self.log_notice("{}: ModulePwrDown duration {} secs".format(lport, modulePwrDownDuration))
+                            self.port_dict[lport]['cmis_expired'] = now + datetime.timedelta(seconds=modulePwrDownDuration)
+
                     elif state == self.CMIS_STATE_DP_DEINIT:
+                        if self.need_lp_mode_for_dpdeinit(api, appl):
+                            if not self.check_module_state(api, ['ModuleLowPwr']):
+                                if (expired is not None) and (expired <= now):
+                                    self.log_notice("{}: timeout for 'ModuleLowPwr'".format(lport))
+                                    self.force_cmis_reinit(lport, retries + 1)
+                                continue
                         # D.2.2 Software Deinitialization
                         api.set_datapath_deinit(host_lanes_mask)
 
