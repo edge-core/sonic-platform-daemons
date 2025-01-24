@@ -29,7 +29,7 @@ try:
     from .xcvrd_utilities import port_mapping
     from .xcvrd_utilities import media_settings_parser
     from .xcvrd_utilities import optics_si_parser
-    
+
     from sonic_platform_base.sonic_xcvr.api.public.c_cmis import CmisApi
 
 except ImportError as e:
@@ -364,6 +364,32 @@ def _wrapper_is_copper(physical_port):
                 pass
 
     return None
+
+
+
+# The API name aligns with the platform API implementation (sfp.set_sfp_mux).
+# It may need to be revised to ensure compatibility for broader usage.
+def _wrapper_set_sfp_mux(physical_port, is_front_port, cfg_speed):
+    """
+    Sets the SFP multiplexer configuration for a given physical port.
+
+    This function interfaces with the platform's SFP module to configure
+    the multiplexer settings.
+    Parameters:
+    - physical_port (int): The identifier of the physical port to configure.
+    - is_front_port (bool): Flag indicating whether the port is a front port.
+    - cfg_speed (str): The speed configuration to set for the SFP multiplexer.
+
+    Returns:
+    - None
+    """
+    if platform_chassis:
+        try:
+            sfp = platform_chassis.get_sfp(physical_port)
+            if hasattr(sfp, 'set_sfp_mux') and sfp.set_sfp_mux(is_front_port, int(cfg_speed)):
+                helper_logger.log_info(f"Successfully set SFP multiplexer for physical port {physical_port} speed {cfg_speed}.")
+        except NotImplementedError:
+            pass
 
 
 # Remove unnecessary unit from the raw data
@@ -776,6 +802,8 @@ def get_port_speed_and_lane_config():
             port_dict[key]['speed'] = port_config_dict['speed']
         if 'lanes' in port_config_dict:
             port_dict[key]['lanes'] = port_config_dict['lanes']
+        if 'index' in port_config_dict:
+            port_dict[key]['index'] = port_config_dict['index']
 
     return port_dict
 
@@ -1880,6 +1908,8 @@ class SfpStateUpdateTask(threading.Thread):
         self._init_port_sfp_status_tbl(port_mapping_data, self.xcvr_table_helper, self.main_thread_stop_event)
         helper_logger.log_notice("SfpStateUpdateTask: Initialized port sfp status table")
 
+        self.sfp_mux_init()
+
     def task_worker(self, stopping_event, sfp_error_event):
         self.xcvr_table_helper = XcvrTableHelper(self.namespaces)
 
@@ -2184,34 +2214,52 @@ class SfpStateUpdateTask(threading.Thread):
             self.on_add_logical_port(port_change_event)
 
     def update_port_speed_and_lane_to_port_dict(self, port_change_event):
+        """
+        Updates the port speed and lane-to-port dictionary based on the port change event.
+
+        Args:
+            port_change_event: An object containing details about the port change event.
+
+        Returns:
+            tuple:
+                notify_media (bool): Indicates whether media settings need to be notified.
+                cfg_speed_change (bool): Indicates whether the speed configuration has changed.
+        """
+
         notify_media = False
+        cfg_speed_change = False
+
         lport = port_change_event.port_name
         pport = port_change_event.port_index
 
-        # Skip if it's not a physical port
-        if not lport.startswith('Ethernet'):
-            return
+        # Skip processing if it's not a physical port or if the physical index is invalid
+        if not lport.startswith('Ethernet') or pport <= -1:
+            return notify_media, cfg_speed_change
 
-        # Skip if the physical index is not available
-        if pport == -1:
-            return
-
+        # Initialize the port dictionary for the logical port if it doesn't exist
         if lport not in self.port_dict:
             self.port_dict[lport] = {}
 
-        if pport >= 0:
-            self.port_dict[lport]['index'] = pport
+        # Update the physical port index in the port dictionary
+        self.port_dict[lport]["index"] = pport
 
-        if port_change_event.port_dict is not None and 'speed' in port_change_event.port_dict:
-            if 'speed' not in self.port_dict[lport] or self.port_dict[lport]['speed'] != port_change_event.port_dict['speed']:
-                notify_media = True
-                self.port_dict[lport]['speed'] = port_change_event.port_dict['speed']
-        if port_change_event.port_dict is not None and 'lanes' in port_change_event.port_dict:
-            if 'lanes' not in self.port_dict[lport] or self.port_dict[lport]['lanes'] != port_change_event.port_dict['lanes']:
-                notify_media = True
-                self.port_dict[lport]['lanes'] = port_change_event.port_dict['lanes']
+        if port_change_event.port_dict and 'speed' in port_change_event.port_dict:
+            current_speed = self.port_dict[lport].get("speed")
+            new_speed = port_change_event.port_dict["speed"]
 
-        return notify_media
+            if current_speed != new_speed:
+                notify_media = True
+                cfg_speed_change = True
+                self.port_dict[lport]['speed'] = new_speed
+
+        if port_change_event.port_dict and 'lanes' in port_change_event.port_dict:
+            current_lanes = self.port_dict[lport].get("lanes")
+            new_lanes = port_change_event.port_dict["lanes"]
+            if current_lanes != new_lanes:
+                notify_media = True
+                self.port_dict[lport]['lanes'] = new_lanes
+
+        return notify_media, cfg_speed_change
 
     # Notify media when the port speed is changed in system runtime
     def port_speed_change_event_handler(self, port_change_event):
@@ -2220,7 +2268,7 @@ class SfpStateUpdateTask(threading.Thread):
 
         lport = port_change_event.port_name
         pport = port_change_event.port_index
-        notify_media = self.update_port_speed_and_lane_to_port_dict(port_change_event)
+        notify_media, cfg_speed_change = self.update_port_speed_and_lane_to_port_dict(port_change_event)
 
         if notify_media is True:
             asic_id = port_change_event.asic_id
@@ -2233,6 +2281,10 @@ class SfpStateUpdateTask(threading.Thread):
                     transceiver_dict[pport] = port_info_dict
 
                 media_settings_parser.notify_media_setting(lport, transceiver_dict, self.xcvr_table_helper.get_app_port_tbl(port_change_event.asic_id), self.xcvr_table_helper.get_cfg_port_tbl(port_change_event.asic_id), self.port_mapping, self.port_dict)
+
+        if cfg_speed_change:
+            cfg_speed = port_change_event.port_dict["speed"]
+            _wrapper_set_sfp_mux(pport, True, cfg_speed)
 
     def on_remove_logical_port(self, port_change_event):
         """Called when a logical port is removed from CONFIG_DB.
@@ -2350,6 +2402,24 @@ class SfpStateUpdateTask(threading.Thread):
         # Update retry EEPROM set
         self.retry_eeprom_set -= retry_success_set
 
+
+    def sfp_mux_init(self):
+        helper_logger.log_notice(f"Initializing SFP multiplexer.")
+
+        for logical_port, cfg in self.port_dict.items():
+            if not logical_port.startswith('Ethernet'):
+                continue
+
+            try:
+                cfg_speed = cfg['speed']
+                physical_port = int(cfg['index'])
+                _wrapper_set_sfp_mux(physical_port, True, cfg_speed)
+            except KeyError as e:
+                helper_logger.log_error(f"KeyError: Missing key {str(e)} in configuration for logical_port {logical_port}.")
+            except ValueError as e:
+                helper_logger.log_error(f"ValueError: Invalid conversion for logical_port {logical_port}: {str(e)}.")
+            except Exception as e:
+                helper_logger.log_error(f"Unexpected error for logical_port {logical_port}: {str(e)}.")
 
 #
 # Daemon =======================================================================
