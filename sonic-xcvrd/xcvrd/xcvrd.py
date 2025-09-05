@@ -811,6 +811,13 @@ def is_fast_reboot_enabled():
     fastboot_enabled = subprocess.check_output('sonic-db-cli STATE_DB hget "FAST_RESTART_ENABLE_TABLE|system" enable', shell=True, universal_newlines=True)
     return "true" in fastboot_enabled
 
+def is_warm_reboot_enabled():
+    warmstart = swsscommon.WarmStart()
+    warmstart.initialize("xcvrd", "pmon")
+    warmstart.checkWarmStart("xcvrd", "pmon", False)
+    is_warm_start = warmstart.isWarmStart()
+    return is_warm_start
+
 # Get port speed and lane config from CONFIG DB
 def get_port_speed_and_lane_config():
     port_dict = {}
@@ -1338,6 +1345,13 @@ class CmisManagerTask(threading.Thread):
             if key in ["PortConfigDone", "PortInitDone"]:
                 break
 
+    def wait_for_warm_reboot_done(self):
+        is_warm_start = is_warm_reboot_enabled()
+
+        if is_warm_start:
+            self.log_notice("Delay CMISManager until warmboot done")
+            swsscommon.RestartWaiter.waitWarmBootDone()
+
     def need_lp_mode_for_dpdeinit(self, api, appl):
         try:
             host_assign = api.get_host_lane_assignment_option(appl)
@@ -1357,6 +1371,8 @@ class CmisManagerTask(threading.Thread):
         self.log_notice("Waiting for PortConfigDone...")
         for namespace in self.namespaces:
             self.wait_for_port_config_done(namespace)
+
+        self.wait_for_warm_reboot_done()
 
         # APPL_DB for CONFIG updates, and STATE_DB for insertion/removal
         sel, asic_context = port_mapping.subscribe_port_update_event(self.namespaces, helper_logger)
@@ -1949,10 +1965,7 @@ class SfpStateUpdateTask(threading.Thread):
         retry_eeprom_set = set()
         port_dict = get_port_speed_and_lane_config()
 
-        warmstart = swsscommon.WarmStart()
-        warmstart.initialize("xcvrd", "pmon")
-        warmstart.checkWarmStart("xcvrd", "pmon", False)
-        is_warm_start = warmstart.isWarmStart()
+        is_warm_start = is_warm_reboot_enabled()
 
         # Post all the current interface sfp/dom threshold info to STATE_DB
         logical_port_list = port_mapping.logical_port_list
@@ -2577,7 +2590,6 @@ class DaemonXcvrd(daemon_base.DaemonBase):
             (key, op, fvp) = port_tbl.pop()
             if key in ["PortConfigDone", "PortInitDone"]:
                 break
-
 
     # Initialize daemon
     def init(self):
