@@ -98,6 +98,8 @@ g_dict = {}
 platform_sfputil = None
 # Global chassis object based on new platform api
 platform_chassis = None
+# Global value to check if warm start
+is_warm_start = False
 
 # Global logger instance for helper functions and classes
 # TODO: Refactor so that we only need the logger inherited
@@ -1346,8 +1348,6 @@ class CmisManagerTask(threading.Thread):
                 break
 
     def wait_for_warm_reboot_done(self):
-        is_warm_start = is_warm_reboot_enabled()
-
         if is_warm_start:
             self.log_notice("Delay CMISManager until warmboot done")
             swsscommon.RestartWaiter.waitWarmBootDone()
@@ -1964,8 +1964,6 @@ class SfpStateUpdateTask(threading.Thread):
         transceiver_dict = {}
         retry_eeprom_set = set()
         port_dict = get_port_speed_and_lane_config()
-
-        is_warm_start = is_warm_reboot_enabled()
 
         # Post all the current interface sfp/dom threshold info to STATE_DB
         logical_port_list = port_mapping.logical_port_list
@@ -2595,6 +2593,7 @@ class DaemonXcvrd(daemon_base.DaemonBase):
     def init(self):
         global platform_sfputil
         global platform_chassis
+        global is_warm_start
 
         self.log_notice("XCVRD INIT: Start daemon init...")
 
@@ -2636,6 +2635,8 @@ class DaemonXcvrd(daemon_base.DaemonBase):
         else:
             media_settings_parser.load_media_settings()
             optics_si_parser.load_optics_si_settings()
+
+        is_warm_start = is_warm_reboot_enabled()
 
         # Make sure this daemon started after all port configured
         self.log_notice("XCVRD INIT: Wait for port config is done")
