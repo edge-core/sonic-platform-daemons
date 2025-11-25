@@ -1446,7 +1446,7 @@ class CmisManagerTask(threading.Thread):
                         self.port_dict[lport]['cmis_state'] = self.CMIS_STATE_READY
                         continue
 
-                    if api.is_coherent_module():
+                    if api.is_tx_tunable():
                        if 'tx_power' not in self.port_dict[lport]:
                            self.port_dict[lport]['tx_power'] = self.get_configured_tx_power_from_db(lport)
                        if 'laser_freq' not in self.port_dict[lport]:
@@ -1531,7 +1531,7 @@ class CmisManagerTask(threading.Thread):
                            self.port_dict[lport]['cmis_state'] = self.CMIS_STATE_READY
                            continue
                     # Configure the target output power if ZR module
-                        if api.is_coherent_module():
+                        if api.is_tx_tunable():
                            tx_power = self.port_dict[lport]['tx_power']
                            # Prevent configuring same tx power multiple times
                            if 0 != tx_power and tx_power != api.get_tx_config_power():
@@ -1543,7 +1543,7 @@ class CmisManagerTask(threading.Thread):
                         need_update = self.is_cmis_application_update_required(api, appl, host_lanes_mask)
 
                         # For ZR module, Datapath needes to be re-initlialized on new channel selection
-                        if api.is_coherent_module():
+                        if api.is_tx_tunable():
                            freq = self.port_dict[lport]['laser_freq']
                            # If user requested frequency is NOT the same as configured on the module
                            # force datapath re-initialization
@@ -1614,7 +1614,7 @@ class CmisManagerTask(threading.Thread):
                                 self.force_cmis_reinit(lport, retries + 1)
                             continue
 
-                        if api.is_coherent_module():
+                        if api.is_tx_tunable():
                         # For ZR module, configure the laser frequency when Datapath is in Deactivated state
                            freq = self.port_dict[lport]['laser_freq']
                            if 0 != freq:
