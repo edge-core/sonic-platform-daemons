@@ -1688,6 +1688,7 @@ class TestXcvrdScript(object):
         assert not task.port_mapping.logical_to_asic
         assert mock_update_status_hw.call_count == 1
 
+    @patch('xcvrd.xcvrd_utilities.port_mapping.subscribe_port_speed_change_event', MagicMock(return_value=(None, None)))
     @patch('xcvrd.xcvrd_utilities.port_mapping.subscribe_port_config_change', MagicMock(return_value=(None, None)))
     def test_SfpStateUpdateTask_task_run_stop(self):
         port_mapping = PortMapping()
