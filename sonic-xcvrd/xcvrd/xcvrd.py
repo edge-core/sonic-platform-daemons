@@ -754,7 +754,7 @@ def waiting_time_compensation_with_sleep(time_start, time_to_wait):
 
 # Update port SFP status table for SW fields on receiving SFP change event
 
-def table_entry_comparer (table, port_name, data):
+def table_entry_comparer(table, port_name, data):
     entry_exist, record = table.get(port_name)
     if entry_exist:
         different = False
@@ -2027,7 +2027,7 @@ class SfpStateUpdateTask(threading.Thread):
             physical_port_list = port_mapping.logical_port_name_to_physical_port_list(logical_port_name)
             if physical_port_list is None:
                 helper_logger.log_error("No physical ports found for logical port '{}' during sfp status table init".format(logical_port_name))
-                update_port_transceiver_status_table_sw(logical_port_name, xcvr_table_helper.get_status_tbl(asic_index), sfp_status_helper.SFP_STATUS_REMOVED, table_entry_compare=(state==STATE_INIT))
+                update_port_transceiver_status_table_sw(logical_port_name, xcvr_table_helper.get_status_tbl(asic_index), sfp_status_helper.SFP_STATUS_REMOVED)
 
             for physical_port in physical_port_list:
                 if stop_event.is_set():
@@ -2041,13 +2041,13 @@ class SfpStateUpdateTask(threading.Thread):
     def init(self):
         port_mapping_data = port_mapping.get_port_mapping(self.namespaces)
 
-        # Post all the current interface sfp/dom threshold info to STATE_DB
-        self.retry_eeprom_set = self._post_port_sfp_info_and_dom_thr_to_db_once(port_mapping_data, self.xcvr_table_helper, self.main_thread_stop_event)
-        helper_logger.log_notice("SfpStateUpdateTask: Posted all port DOM/SFP info to DB")
-
         # Init port sfp status table
         self._init_port_sfp_status_tbl(port_mapping_data, self.xcvr_table_helper, self.main_thread_stop_event)
         helper_logger.log_notice("SfpStateUpdateTask: Initialized port sfp status table")
+
+        # Post all the current interface sfp/dom threshold info to STATE_DB
+        self.retry_eeprom_set = self._post_port_sfp_info_and_dom_thr_to_db_once(port_mapping_data, self.xcvr_table_helper, self.main_thread_stop_event)
+        helper_logger.log_notice("SfpStateUpdateTask: Posted all port DOM/SFP info to DB")
 
         self.sfp_mux_init()
 
@@ -2701,6 +2701,11 @@ class DaemonXcvrd(daemon_base.DaemonBase):
         # Start daemon initialization sequence
         port_mapping_data = self.init()
 
+        # Start the sfp state info update thread
+        sfp_state_update = SfpStateUpdateTask(self.namespaces, port_mapping_data, self.stop_event, self.sfp_error_event)
+        sfp_state_update.start()
+        self.threads.append(sfp_state_update)
+
         # Start the CMIS manager
         cmis_manager = CmisManagerTask(self.namespaces, port_mapping_data, self.stop_event, self.skip_cmis_mgr)
         if not self.skip_cmis_mgr:
@@ -2712,10 +2717,6 @@ class DaemonXcvrd(daemon_base.DaemonBase):
         dom_info_update.start()
         self.threads.append(dom_info_update)
 
-        # Start the sfp state info update thread
-        sfp_state_update = SfpStateUpdateTask(self.namespaces, port_mapping_data, self.stop_event, self.sfp_error_event)
-        sfp_state_update.start()
-        self.threads.append(sfp_state_update)
 
         # Start main loop
         self.log_notice("Start daemon main loop with thread count {}".format(len(self.threads)))
