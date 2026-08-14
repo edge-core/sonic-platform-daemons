@@ -2583,7 +2583,16 @@ class DaemonXcvrd(daemon_base.DaemonBase):
                 continue
             if state != swsscommon.Select.OBJECT:
                 self.log_warning("sel.select() did not return swsscommon.Select.OBJECT")
+                select_errors = getattr(self, '_wait_port_config_select_errors', 0) + 1
+                self._wait_port_config_select_errors = select_errors
+                if select_errors >= port_mapping.SELECT_ERROR_MAX_CONSECUTIVE:
+                    self._wait_port_config_select_errors = 0
+                    raise RuntimeError("sel.select() failed {} consecutive times in "
+                                       "wait_for_port_config_done, Redis may be unavailable"
+                                       .format(port_mapping.SELECT_ERROR_MAX_CONSECUTIVE))
+                time.sleep(port_mapping.SELECT_ERROR_BACKOFF_SECS)
                 continue
+            self._wait_port_config_select_errors = 0
 
             (key, op, fvp) = port_tbl.pop()
             if key in ["PortConfigDone", "PortInitDone"]:

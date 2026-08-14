@@ -1,10 +1,18 @@
 from natsort import natsorted
+import time
 from sonic_py_common import daemon_base
 from sonic_py_common import multi_asic
 from sonic_py_common.interface import backplane_prefix, inband_prefix, recirc_prefix
 from swsscommon import swsscommon
 
 SELECT_TIMEOUT_MSECS = 1000
+
+# Maximum consecutive select errors before raising an exception.
+# This prevents silent log floods when Redis connection is lost.
+SELECT_ERROR_MAX_CONSECUTIVE = 5
+
+# Sleep duration (seconds) after a select error to avoid tight-loop CPU burn.
+SELECT_ERROR_BACKOFF_SECS = 1
 
 
 class PortChangeEvent:
@@ -163,18 +171,27 @@ def apply_filter_to_fvp(filter, fvp):
             if key not in (set(filter) | set({'index', 'key', 'asic_id', 'op'})):
                 del fvp[key]
 
+_port_update_consecutive_errors = 0
 def handle_port_update_event(sel, asic_context, stop_event, logger, port_change_event_handler):
     """
     Select PORT update events, notify the observers upon a port update in CONFIG_DB
     or a XCVR insertion/removal in STATE_DB
     """
+    global _port_update_consecutive_errors
     if not stop_event.is_set():
         (state, _) = sel.select(SELECT_TIMEOUT_MSECS)
         if state == swsscommon.Select.TIMEOUT:
             return
         if state != swsscommon.Select.OBJECT:
+            _port_update_consecutive_errors += 1
             logger.log_warning('sel.select() did not return swsscommon.Select.OBJECT')
+            if _port_update_consecutive_errors >= SELECT_ERROR_MAX_CONSECUTIVE:
+                _port_update_consecutive_errors = 0
+                raise RuntimeError('sel.select() failed {} consecutive times in handle_port_update_event, '
+                                   'Redis may be unavailable'.format(SELECT_ERROR_MAX_CONSECUTIVE))
+            time.sleep(SELECT_ERROR_BACKOFF_SECS)
             return
+        _port_update_consecutive_errors = 0
 
         port_event_cache = {}
         for port_tbl in asic_context.keys():
@@ -233,16 +250,26 @@ def handle_port_update_event(sel, asic_context, stop_event, logger, port_change_
                port_change_event_handler(port_change_event)
 
 
+_port_config_change_consecutive_errors = 0
+
 def handle_port_config_change(sel, asic_context, stop_event, port_mapping, logger, port_change_event_handler):
     """Select CONFIG_DB PORT table changes, once there is a port configuration add/remove, notify observers
     """
+    global _port_config_change_consecutive_errors
     if not stop_event.is_set():
         (state, _) = sel.select(SELECT_TIMEOUT_MSECS)
         if state == swsscommon.Select.TIMEOUT:
             return
         if state != swsscommon.Select.OBJECT:
+            _port_config_change_consecutive_errors += 1
             logger.log_warning('sel.select() did not return swsscommon.Select.OBJECT')
+            if _port_config_change_consecutive_errors >= SELECT_ERROR_MAX_CONSECUTIVE:
+                _port_config_change_consecutive_errors = 0
+                raise RuntimeError('sel.select() failed {} consecutive times in handle_port_config_change, '
+                                   'Redis may be unavailable'.format(SELECT_ERROR_MAX_CONSECUTIVE))
+            time.sleep(SELECT_ERROR_BACKOFF_SECS)
             return
+        _port_config_change_consecutive_errors = 0
 
         read_port_config_change(asic_context, port_mapping, logger, port_change_event_handler)
 
